@@ -1,9 +1,13 @@
 import socket 
+import rsa
+
+from teste import decript
+
+publicKey, privateKey = rsa.newkeys(512)
 
 ##ifconfig - comando achar ip no linux
 
-IP, PORTA = '10.1.23.57',9002
-
+IP, PORTA = '152.92.219.139',9000
 
 ##Cria o sockeet
 server_socket = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
@@ -23,6 +27,7 @@ while True:
         ##Tratar a mensagem (Print)
         print(f"Conexão estabelecida com {client_address}")
         msg = Client_socket.recv(1024).decode('utf-8')
+        # msg = decript(msg)
         msg_list = msg.split('|')
         if len(msg_list) != 2:
             raise Exception
@@ -35,4 +40,5 @@ while True:
     except KeyError:
         Client_socket.send("Erro".encode('utf-8'))
     finally:
-        server_socket.close()
+        if 'mensagem' in locals() and mensagem == "FIM":
+            break

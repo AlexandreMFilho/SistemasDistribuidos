@@ -1,15 +1,21 @@
-import socket 
+import socket
+import rsa
+
+from teste import encript
+
+publicKey, privateKey = rsa.newkeys(512)
 
 # Cria um socket TCP
-
+erro_conexao = 0
 while True:
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
         # Conecta ao servidor
-        client_socket.connect(('10.1.23.44', 9002))
+        client_socket.connect(('152.92.219.139', 9000))
 
         # Envia uma mensagem
         mensagem = input("digite a mensagem:\n")
+        # mensagem = encript(mensagem,publicKey)
         message = f"Xande|{mensagem}"
         client_socket.send(message.encode('utf-8'))
 
@@ -18,12 +24,18 @@ while True:
         print(f"Resposta do servidor: {response.decode('utf-8')}")
 
     except ConnectionRefusedError as e:
-        print(f"Erro de conexão: {e}")
+        erro_conexao += 1
+        if erro_conexao > 3:
+            print("Número máximo de tentativas de conexão atingido. Encerrando.")
+            break
+        else:
+            print(f"Erro de conexão: {e}")
 
     except UnicodeEncodeError as e:
         print(f"Erro de codificação: {e}")
 
     finally:
         # Fecha o socket
-        if(mensagem == "FIM"):
-            client_socket.close()
+        client_socket.close()
+        if 'mensagem' in locals() and mensagem == "FIM":
+            break

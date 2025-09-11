@@ -1,9 +1,4 @@
 import socket
-import rsa
-
-from teste import encript
-
-publicKey, privateKey = rsa.newkeys(512)
 
 # Cria um socket TCP
 erro_conexao = 0
@@ -11,11 +6,10 @@ while True:
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
         # Conecta ao servidor
-        client_socket.connect(('152.92.219.139', 9000))
+        client_socket.connect(('172.31.230.241', 9004))
 
         # Envia uma mensagem
         mensagem = input("digite a mensagem:\n")
-        # mensagem = encript(mensagem,publicKey)
         message = f"Xande|{mensagem}"
         client_socket.send(message.encode('utf-8'))
 

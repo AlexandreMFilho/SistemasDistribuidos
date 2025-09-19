@@ -13,6 +13,7 @@ STATUSLIDER = None # None | "waiting" | "elected"
 
 # Cache de mensagens (FIFO com limite de 50)
 cache = deque(maxlen=50)
+username = "system" # Default username
 
 def enviar_para_proximo(msg):
     """Envia a mensagem para o próximo nó da cadeia"""
@@ -24,14 +25,21 @@ def enviar_para_proximo(msg):
     except Exception as e:
         print(f"Erro ao enviar para próximo nó: {e}")
 
+def cliente_envio(user, content):
+    """Gera id|user|content e envia para o próximo nó (padrão)."""
+    msg_id = str(uuid.uuid4())
+    u = user if user else username
+    msg = f"{msg_id}|{u}|{content}"
+    enviar_para_proximo(msg)
+
+# ---- FUNÇÃO TRATAR_CONEXAO (MODIFICADA) ----
 def tratar_conexao(client_socket, addr):
     """Thread que trata cada conexão"""
     try:
         msg = client_socket.recv(1024).decode("utf-8")
         if not msg:
             return
-
-        # Estrutura esperada: id|username|mensagem
+            
         partes = msg.split("|")
         if len(partes) != 3:
             return
@@ -40,13 +48,24 @@ def tratar_conexao(client_socket, addr):
         card = f"{msg_id}|{user}|{conteudo}"
 
         if card in cache:
-            lixo = 0
-            # print(f"[{addr}] Mensagem duplicada ignorada.")
-        else:
-            cache.append(card)
-            print(f"[{addr}] {user}: {conteudo}")
-            # Repassar ao próximo nó
+            return # Mensagem duplicada, ignora.
+
+        cache.append(card)
+        print(f"[{addr}] {user}: {conteudo}")
+
+        # ----- LÓGICA CENTRALIZADA DE ELEIÇÃO E REPASSE -----
+        deve_repassar = True
+        
+        # Se a mensagem for de eleição, processa o estado do nó
+        if conteudo.strip().upper().startswith("@LIDER"):
+            # A função eleger_lider agora retorna se o ciclo da mensagem deve ser quebrado
+            parar_ciclo = eleger_lider(conteudo)
+            if parar_ciclo:
+                deve_repassar = False
+
+        if deve_repassar:
             enviar_para_proximo(card)
+        # ---------------------------------------------------
 
     finally:
         client_socket.close()
@@ -55,8 +74,6 @@ def servidor():
     """Servidor multithread que recebe mensagens"""
     global MEU_PORTA
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-
-    # Tentar até achar uma porta livre
     while True:
         try:
             server_socket.bind((MEU_IP, MEU_PORTA))
@@ -64,90 +81,94 @@ def servidor():
         except OSError:
             print(f"Porta {MEU_PORTA} já em uso, tentando {MEU_PORTA+1}...")
             MEU_PORTA += 1
-
     server_socket.listen(5)
     print(f"Servidor rodando em {MEU_IP}:{MEU_PORTA}")
-
     while True:
         client_socket, addr = server_socket.accept()
         threading.Thread(target=tratar_conexao, args=(client_socket, addr)).start()
-
-def cliente_envio(user, conteudo):
-    """Cliente usado pelo próprio nó para iniciar mensagens"""
-    msg_id = str(uuid.uuid4())
-    msg = f"{msg_id}|{user}|{conteudo}"
-    enviar_para_proximo(msg)
-
-
-
 
 def configurar_username():
     global username
     username = input("Digite o nome de usuário:\n ")
 
+# ---- FUNÇÃO ELEGER_LIDER (MODIFICADA) ----
 def eleger_lider(msg):
-    #Mensagem pode ser @LIDER ou @LIDER|IP:PORTA
+    """
+    Processa mensagens de eleição e atualiza o estado do nó.
+    Retorna True se a mensagem original não deve ser mais repassada.
+    Retorna False se a mensagem original deve continuar circulando.
+    """
     global LIDER, STATUSLIDER
-
-    print(f"Eleição de líder iniciada. Status atual: LIDER={LIDER}, STATUSLIDER={STATUSLIDER}\nmensagem: {msg}")
-
-    if(LIDER == None and STATUSLIDER == None):
-        enviar_para_proximo("@LIDER")
-        STATUSLIDER = 'waiting'
-        print(f"STATUSLIDER atualizado para {STATUSLIDER} Aguardando eleição de líder...")
-
-    if(LIDER == None and STATUSLIDER == 'waiting'):
-        if msg.startswith("@LIDER"):
-            LIDER = f"{MEU_IP}:{MEU_PORTA}"
-            STATUSLIDER = 'elected'
-            enviar_para_proximo(f"@LIDER|{MEU_IP}:{MEU_PORTA}")
-            print(f"Novo líder eleito sou eu: {LIDER}")
-
-        if msg.startswith("@LIDER|"):
-            ip_rec = msg.split("|")[1]
-            if(ip_rec != f"{MEU_IP}:{MEU_PORTA}"):
-                LIDER = ip_rec
-                STATUSLIDER = 'elected'
-                enviar_para_proximo(f"@LIDER|{LIDER}")
-                print(f"Novo líder eleito não sou eu é o: {LIDER}")
-
-            else:
-                lixo = 0  
-                print("Recebi minha própria mensagem de líder, ignorando...")
-
-    if(LIDER != None and STATUSLIDER == 'elected'):
-        if msg.startswith("@LIDER") or msg.startswith("@LIDER|"):
-            enviar_para_proximo(f"@LIDER|{LIDER}")
-            print(f"Líder já eleito: {LIDER}, ignorando nova eleição.") 
-        
-if __name__ == "__main__":
-    # Inicia servidor em thread
-    threading.Thread(target=servidor, daemon=True).start()
-
-    # Loop para enviar mensagens manualmente
     
-    aux = input(f"Comunicando com {PROXIMO_IP}:{PROXIMO_PORTA}.\nDigite o IP que você deseja se conectar Ou pressione Enter para continuar...\n")
-    if(aux):
-        PROXIMO_IP = aux
-        print(f"IP do Próximo nó alterado para {PROXIMO_IP}")
+    conteudo = msg.strip().upper()
+    partes = conteudo.split(">>")
 
-    aux2 = input(f"Digite a PORTA que você deseja se conectar:\n Ou pressione Enter para continuar...\n")
-    if(aux2):
+    # Caso 1: Recebeu um token de votação "@LIDER>>IP:PORTA"
+    if len(partes) == 2 and partes[0] == "@LIDER":
+        ip_iniciador = partes[1]
+        # Se o token que eu iniciei voltou para mim
+        if ip_iniciador == f"{MEU_IP}:{MEU_PORTA}" and STATUSLIDER == "waiting":
+            print(f"Meu token de eleição retornou. Sou o novo líder!")
+            LIDER = ip_iniciador
+            STATUSLIDER = "elected"
+            # Crio uma NOVA mensagem para ANUNCIAR que sou o líder
+            cliente_envio(username, f"@LIDER>>{LIDER}>>ELECTED")
+            # O token de votação original não precisa mais circular.
+            return True # PARAR o ciclo do token de votação
+        
+    # Caso 2: Recebeu um anúncio de líder eleito "@LIDER>>IP:PORTA>>ELECTED"
+    elif len(partes) == 3 and partes[0] == "@LIDER" and partes[2] == "ELECTED":
+        ip_lider = partes[1]
+        if LIDER is None:
+            # É a primeira vez que vejo este anúncio.
+            LIDER = ip_lider
+            STATUSLIDER = "elected"
+            print(f"Líder reconhecido: {LIDER}")
+            # Deixo o anúncio passar para que outros saibam.
+            return False # CONTINUAR o ciclo do anúncio
+        else:
+            # Se eu já tenho um líder, o anúncio completou a volta no anel.
+            print(f"Anúncio de líder já processado. Interrompendo repasse.")
+            return True # PARAR o ciclo do anúncio
+
+    # Para qualquer outro caso (ex: token de outro nó), a mensagem deve continuar circulando.
+    return False
+
+def iniciar_eleicao():
+    """Função para ser chamada pelo usuário para começar uma eleição."""
+    global STATUSLIDER
+    if LIDER is None and STATUSLIDER is None:
+        STATUSLIDER = "waiting"
+        print("Iniciando processo de eleição...")
+        cliente_envio(username, f"@LIDER>>{MEU_IP}:{MEU_PORTA}")
+    else:
+        print(f"Uma eleição já está em andamento ou um líder já foi eleito: {LIDER}")
+
+
+if __name__ == "__main__":
+    threading.Thread(target=servidor, daemon=True).start()
+    
+    aux = input(f"IP do próximo nó é {PROXIMO_IP}:{PROXIMO_PORTA}. Pressione Enter ou digite um novo IP: ")
+    if aux:
+        PROXIMO_IP = aux
+    
+    aux2 = input(f"Porta do próximo nó é {PROXIMO_PORTA}. Pressione Enter ou digite uma nova porta: ")
+    if aux2:
         PROXIMO_PORTA = int(aux2)
-        print(f"Porta do Próximo nó alterado para {PROXIMO_PORTA}")
     
     configurar_username()
-
-    print(f"Servidor rodando em {MEU_IP}:{MEU_PORTA}")
-    print(f"Comunicando com {PROXIMO_IP}:{PROXIMO_PORTA}")
+    print("-" * 30)
+    print(f"Nó configurado em {MEU_IP}:{MEU_PORTA}")
+    print(f"Conectado ao próximo nó em {PROXIMO_IP}:{PROXIMO_PORTA}")
+    print("Digite a mensagem ou '@LIDER' para iniciar uma eleição, ou 'FIM' para sair.")
+    print("-" * 30)
 
     while True:
-        texto = input("Digite a mensagem (ou FIM para sair): ")
+        texto = input()
         if texto.strip().upper() == "FIM":
             break
-        if texto.strip().upper() == "@LIDER" or texto.strip().startswith("@LIDER|"):
-            #pegar também a mensagem recebida
-            eleger_lider(texto)
-
-
+        if texto.strip().upper() == "@LIDER":
+            iniciar_eleicao()
+            continue
+        
         cliente_envio(username, texto)

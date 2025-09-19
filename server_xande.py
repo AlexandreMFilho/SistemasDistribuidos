@@ -2,7 +2,7 @@ import socket
 
 ##ifconfig - comando achar ip no linux
 
-IP, PORTA = '172.31.230.241',9004
+IP, PORTA = '172.31.230.241',9000
 
 ##Cria o sockeet
 server_socket = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
@@ -11,7 +11,7 @@ server_socket = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
 server_socket.bind((IP,PORTA))
 
 ##Listen
-server_socket.listen(5)
+server_socket.listen(1)
 
 print("Servidor pronto e aguardando conexões...")
 cache=[]

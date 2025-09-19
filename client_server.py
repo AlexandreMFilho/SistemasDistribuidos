@@ -8,7 +8,8 @@ MEU_IP = "127.0.0.1"
 MEU_PORTA = 9001
 PROXIMO_IP = "127.0.0.1"
 PROXIMO_PORTA = 9002
-
+LIDER = None # None | "IP:PORTA"
+STATUSLIDER = None # None | "waiting" | "elected"
 
 # Cache de mensagens (FIFO com limite de 50)
 cache = deque(maxlen=50)
@@ -78,18 +79,47 @@ def cliente_envio(user, conteudo):
     enviar_para_proximo(msg)
 
 
-def eleger_lider():
-    """Função para eleger um líder (simplesmente imprime uma mensagem por enquanto)"""
-    if(lider):
-        texto = 
-        cliente_envio(username, texto)
-
-    print("Iniciando eleição de líder...")
-    # Aqui você pode implementar um algoritmo de eleição real
-    print("Líder eleito: Nó com IP
 
 
+def configurar_username():
+    global username
+    username = input("Digite o nome de usuário:\n ")
 
+def eleger_lider(msg):
+    #Mensagem pode ser @LIDER ou @LIDER|IP:PORTA
+    global LIDER, STATUSLIDER
+
+    print(f"Eleição de líder iniciada. Status atual: LIDER={LIDER}, STATUSLIDER={STATUSLIDER}\nmensagem: {msg}")
+
+    if(LIDER == None and STATUSLIDER == None):
+        enviar_para_proximo("@LIDER")
+        STATUSLIDER = 'waiting'
+        print(f"STATUSLIDER atualizado para {STATUSLIDER} Aguardando eleição de líder...")
+
+    if(LIDER == None and STATUSLIDER == 'waiting'):
+        if msg.startswith("@LIDER"):
+            LIDER = f"{MEU_IP}:{MEU_PORTA}"
+            STATUSLIDER = 'elected'
+            enviar_para_proximo(f"@LIDER|{MEU_IP}:{MEU_PORTA}")
+            print(f"Novo líder eleito sou eu: {LIDER}")
+
+        if msg.startswith("@LIDER|"):
+            ip_rec = msg.split("|")[1]
+            if(ip_rec != f"{MEU_IP}:{MEU_PORTA}"):
+                LIDER = ip_rec
+                STATUSLIDER = 'elected'
+                enviar_para_proximo(f"@LIDER|{LIDER}")
+                print(f"Novo líder eleito não sou eu é o: {LIDER}")
+
+            else:
+                lixo = 0  
+                print("Recebi minha própria mensagem de líder, ignorando...")
+
+    if(LIDER != None and STATUSLIDER == 'elected'):
+        if msg.startswith("@LIDER") or msg.startswith("@LIDER|"):
+            enviar_para_proximo(f"@LIDER|{LIDER}")
+            print(f"Líder já eleito: {LIDER}, ignorando nova eleição.") 
+        
 if __name__ == "__main__":
     # Inicia servidor em thread
     threading.Thread(target=servidor, daemon=True).start()
@@ -105,8 +135,8 @@ if __name__ == "__main__":
     if(aux2):
         PROXIMO_PORTA = int(aux2)
         print(f"Porta do Próximo nó alterado para {PROXIMO_PORTA}")
-        
-    username = input("Digite o nome de usuário:\n ")
+    
+    configurar_username()
 
     print(f"Servidor rodando em {MEU_IP}:{MEU_PORTA}")
     print(f"Comunicando com {PROXIMO_IP}:{PROXIMO_PORTA}")
@@ -115,7 +145,9 @@ if __name__ == "__main__":
         texto = input("Digite a mensagem (ou FIM para sair): ")
         if texto.strip().upper() == "FIM":
             break
-        if texto.strip().upper() == "@LIDER":
-            eleger_lider()
+        if texto.strip().upper() == "@LIDER" or texto.strip().startswith("@LIDER|"):
+            #pegar também a mensagem recebida
+            eleger_lider(texto)
+
 
         cliente_envio(username, texto)

@@ -7,6 +7,13 @@ import os
 import inspect
 import sys
 
+# --- MODO DE EXECUÇÃO (DEBUG / HEARTBEAT / PADRÃO) ---
+if len(sys.argv) > 1:
+    MODO = sys.argv[1]
+else:
+    MODO = ""
+   
+
 # --- VARIÁVEIS GLOBAIS ---
 MEU_IP = "127.0.0.1"
 MEU_PORTA = 9001
@@ -19,6 +26,9 @@ LIDER = None # "IP:PORTA" do líder
 STATUSLIDER = None # "waiting" | "elected"
 
 NETWORK_MEMBERS = [] # Lista com os IDs de todos os nós na rede
+
+ultimo_heartbeat = 0
+heartbeat_thread_started = False
 
 cache = deque(maxlen=50)
 username = "system"
@@ -36,7 +46,7 @@ def handle_list_build(user, conteudo, msg_id, **kwargs):
     iniciador, membros_str = partes_list[1], partes_list[2]
 
     if iniciador == MEU_ID:
-        if(sys.argv[1] == "debug"):
+        if MODO == "debug":
             print("[REDE] Lista de membros completa recebida.")
         NETWORK_MEMBERS = sorted(membros_str.split(','))
         distribuir_lista_membros()
@@ -50,7 +60,7 @@ def handle_list_update(user, conteudo,**kwargs):
     """Trata a atualização da lista de membros."""
     global NETWORK_MEMBERS
     NETWORK_MEMBERS = sorted(conteudo.split(">>")[1].split(','))
-    if(sys.argv[1] == "debug"):
+    if MODO == "debug":
         print(f"[REDE] Lista de membros atualizada: {NETWORK_MEMBERS}")
     return False # Deixa a mensagem circular para todos
 
@@ -58,7 +68,7 @@ def handle_exit(user, conteudo,**kwargs):
     """Trata o anúncio de saída de um nó."""
     if LIDER == MEU_ID:
         no_saindo = conteudo.split(">>")[1]
-        if(sys.argv[1] == "debug"):
+        if MODO == "debug":
             print(f"[LIDER] Nó {no_saindo} está saindo. Recalculando o anel.")
         gerenciar_saida_de_no(no_saindo)
     return False # Deixa a mensagem circular para chegar ao líder
@@ -71,7 +81,7 @@ def handle_reconnect(user, conteudo,**kwargs):
         novo_ip, nova_porta = novo_vizinho.split(":")
         PROXIMO_IP = novo_ip
         PROXIMO_PORTA = int(nova_porta)
-        if(sys.argv[1] == "debug"):
+        if MODO == "debug":
             print(f"[REDE] Anel atualizado. Meu novo vizinho é {novo_vizinho}")
         return True # Mensagem era para mim, para o ciclo.
     return False # Deixa circular se não for para mim
@@ -79,7 +89,7 @@ def handle_reconnect(user, conteudo,**kwargs):
 def handle_leader_exit(user, conteudo,**kwargs):
     """Trata a saída do líder, forçando nova eleição."""
     global LIDER, STATUSLIDER, NETWORK_MEMBERS
-    if(sys.argv[1] == "debug"):
+    if MODO == "debug":
         print("[REDE] O LÍDER SAIU! Resetando estado e iniciando nova eleição.")
     LIDER = None
     STATUSLIDER = None
@@ -91,7 +101,7 @@ def enviar_heartbeat():
     while True:
         if LIDER == MEU_ID:
             cliente_envio(username, "@HEARTBEAT")
-            if(sys.argv[1] == "heartbeat"):
+            if MODO == "heartbeat":
                 print(f"[HEARTBEAT] Enviado pelo líder {LIDER}")  
         time.sleep(5)
         
@@ -99,7 +109,7 @@ def enviar_heartbeat():
 def handle_heartbeat(user, conteudo, **kwargs):
     global ultimo_heartbeat
     ultimo_heartbeat = time.time()
-    if(sys.argv[1] == "heartbeat"):
+    if MODO == "heartbeat":
         print(f"[HEARTBEAT] Recebido de {user} ({time.strftime('%H:%M:%S')})")
     return False
 
@@ -109,7 +119,7 @@ def monitorar_heartbeat():
     ultimo_heartbeat = time.time()
     while True:
         if time.time() - ultimo_heartbeat > 10:
-            if(sys.argv[1] == "heartbeat"):
+            if MODO == "heartbeat":
                 print("[ALERTA] Falha do líder detectada. Iniciando eleição.")
             iniciar_eleicao()
         time.sleep(2)
@@ -152,18 +162,29 @@ def tratar_conexao(client_socket, addr):
     """Thread que trata cada conexão e delega o processamento."""
     try:
         msg = client_socket.recv(1024).decode("utf-8")
-        if not msg or "|" not in msg: return
-            
+        if not msg or "|" not in msg:
+            return
+
         partes = msg.split("|")
-        if len(partes) != 3: return
+        if len(partes) != 3:
+            return
 
         msg_id, user, conteudo = partes
         card = f"{msg_id}|{user}|{conteudo}"
 
-        if card in cache: return
+        if card in cache:
+            return
         cache.append(card)
-        
-        print(f"\n[MSG de {addr}] {user}: {conteudo}\n> ", end="")
+
+        # 🔹 Filtra mensagens internas antes de exibir
+        comando_interno = conteudo.strip().split(">>")[0].upper()
+        comandos_internos = (
+            "@HEARTBEAT", "@LIDER", "@LIST_BUILD", "@LIST_UPDATE",
+            "@EXIT", "@RECONNECT", "@LEADER_EXIT"
+        )
+
+        if not comando_interno.startswith(comandos_internos):
+            print(f"\n[MSG de {addr}] {user}: {conteudo}\n> ", end="")
 
         # Delega toda a lógica para o dispatcher
         deve_repassar = processar_mensagem(card, msg_id, user, conteudo)
@@ -209,11 +230,16 @@ def eleger_lider(msg):
         if ip_iniciador == MEU_ID and STATUSLIDER == "waiting":
             LIDER = MEU_ID
             STATUSLIDER = "elected"
-            if(sys.argv[1] == "debug"):
+            if MODO == "debug":
                 print(f"\n[ELEIÇÃO] Venci! Sou o novo líder: {LIDER}")
             cliente_envio(username, f"@LIDER>>{LIDER}>>ELECTED")
             time.sleep(1) # Pequena pausa antes de iniciar a construção da lista
             iniciar_construcao_lista() # Líder eleito inicia a criação da lista
+            
+            threading.Thread(target=enviar_heartbeat, daemon=True).start()
+            if MODO == "heartbeat":
+                print(f"[HEARTBEAT] Thread iniciada automaticamente para o novo líder {LIDER}")
+
             return True
         
     elif len(partes) == 3 and partes[0] == "@LIDER" and partes[2] == "ELECTED": # Anúncio de líder
@@ -230,23 +256,23 @@ def iniciar_eleicao():
     global STATUSLIDER
     if LIDER is None and STATUSLIDER is None:
         STATUSLIDER = "waiting"
-        if(sys.argv[1] == "debug"):
+        if MODO == "debug":
             print("\n[ELEIÇÃO] Iniciei uma nova eleição...")
         cliente_envio(username, f"@LIDER>>{MEU_ID}")
     else:
-        if(sys.argv[1] == "debug"):
+        if MODO == "debug":
             print("\n[ELEIÇÃO] Eleição já em andamento ou líder já definido.")
 
 def iniciar_construcao_lista():
     if LIDER == MEU_ID:
-        if(sys.argv[1] == "debug"):
+        if MODO == "debug":
             print("[LIDER] Iniciando construção da lista de membros da rede.")
         # Mensagem: @LIST_BUILD>>IP_do_Lider>>IP_do_primeiro_no (eu mesmo)
         cliente_envio(username, f"@LIST_BUILD>>{MEU_ID}>>{MEU_ID}")
 
 def distribuir_lista_membros():
     if LIDER == MEU_ID:
-        if(sys.argv[1] == "debug"):
+        if MODO == "debug":
             print(f"[LIDER] Distribuindo a lista final para a rede: {NETWORK_MEMBERS}")
         membros_str = ",".join(NETWORK_MEMBERS)
         cliente_envio(username, f"@LIST_UPDATE>>{membros_str}")
@@ -264,12 +290,12 @@ def gerenciar_saida_de_no(no_saindo):
 
     # O nó que está saindo é o próprio líder, não há o que fazer aqui
     if predecessor == sucessor or predecessor == no_saindo:
-        if(sys.argv[1] == "debug"):
+        if MODO == "debug":
             print("[LIDER] A rede ficará com apenas um nó. Nenhuma reconexão necessária.")
         NETWORK_MEMBERS.remove(no_saindo)
         return
 
-    if(sys.argv[1] == "debug"):print(f"[LIDER] Instruindo {predecessor} a se conectar com {sucessor}.")
+    if MODO == "debug":print(f"[LIDER] Instruindo {predecessor} a se conectar com {sucessor}.")
     # Mensagem: @RECONNECT>>Nó_Alvo>>Novo_Vizinho
     cliente_envio(username, f"@RECONNECT>>{predecessor}>>{sucessor}")
     
@@ -279,7 +305,7 @@ def gerenciar_saida_de_no(no_saindo):
     distribuir_lista_membros()
 
 def graceful_exit():
-    if(sys.argv[1] == "debug"):
+    if MODO == "debug":
         print("\nIniciando procedimento de saída da rede...")
     if LIDER == MEU_ID:
         # Se sou o líder, aviso a todos para começarem uma nova eleição
@@ -289,7 +315,7 @@ def graceful_exit():
         cliente_envio(username, f"@EXIT>>{MEU_ID}")
     
     time.sleep(1) # Espera um segundo para garantir que a mensagem foi enviada
-    if(sys.argv[1] == "debug"):
+    if MODO == "debug":
         print("Até logo!")
     os._exit(0) # Força a saída do programa
 
@@ -371,13 +397,11 @@ LOCAL_COMMANDS = {
 
 if __name__ == "__main__":
     # print(sys.argv)
-   
+    
+
     # --- INICIALIZAÇÃO ---
     threading.Thread(target=servidor, daemon=True).start()
     
-    ultimo_heartbeat = time.time()
-    threading.Thread(target=monitorar_heartbeat, daemon=True).start()  # Todos os nós monitoram
-    threading.Thread(target=enviar_heartbeat, daemon=True).start()     # O líder envia batimentos
     
     print("--- Configuração do Nó ---")
     aux = input(f"IP do próximo nó é {PROXIMO_IP}. Pressione Enter ou digite um novo IP: ")
@@ -388,6 +412,16 @@ if __name__ == "__main__":
     
     configurar_username()
     time.sleep(1) 
+    
+    # --- HEARTBEATS ---
+    
+    if not heartbeat_thread_started:
+        threading.Thread(target=enviar_heartbeat, daemon=True).start()
+        heartbeat_thread_started = True
+    
+    ultimo_heartbeat = time.time()
+    threading.Thread(target=monitorar_heartbeat, daemon=True).start()  # Todos os nós monitoram
+    threading.Thread(target=enviar_heartbeat, daemon=True).start()     # O líder envia batimentos
     
     local_cmd_help() # Mostra a ajuda inicial
 

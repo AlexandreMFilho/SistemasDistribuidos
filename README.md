@@ -35,6 +35,11 @@ enviado pelo classroom.
 
 ## Arquitetura peer-to-peer
 ## Entrada multicast na rede
+
+✔️ Listener multicast inicia apenas uma vez (evita erro “address already in use”).
+
+✔️ O primeiro nó assume automaticamente como líder, garantindo inicialização suave da rede distribuída.
+
 ## Papel do Coordenador
 ### Integração do heartbeat
 
@@ -57,6 +62,10 @@ Apenas o líder enviará batimentos (if LIDER == MEU_ID:).
 Ao perder o líder, os outros nós iniciarão uma nova eleição.
 
 Quando o novo líder for eleito, ele automaticamente começará a enviar batimentos (pois a thread já está rodando e a condição passará a ser verdadeira).
+
+O envio de batimentos (enviar_heartbeat) só é iniciado quando há eleição concluída — ou seja, quando o nó se torna líder.
+
+Isso evita batimentos prematuros e reduz ruído na rede.
 
 ## Eleição de novo coordenador
 ## Tolerância a falhas

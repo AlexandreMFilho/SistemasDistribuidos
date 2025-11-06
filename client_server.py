@@ -4,7 +4,6 @@ import uuid
 from collections import deque
 import time
 import os
-import inspect
 import sys
 
 # --- MODO DE EXECUÇÃO (DEBUG / HEARTBEAT / PADRÃO) ---
@@ -13,6 +12,9 @@ if len(sys.argv) > 1:
 else:
     MODO = ""
    
+# --- CONFIGURAÇÃO DE MULTICAST ---
+MULTICAST_GROUP = '224.1.1.1'
+MULTICAST_PORT = 5007
 
 # --- VARIÁVEIS GLOBAIS ---
 MEU_IP = "127.0.0.1"
@@ -225,22 +227,29 @@ def eleger_lider(msg):
     conteudo = msg.strip().upper()
     partes = conteudo.split(">>")
 
-    if len(partes) == 2 and partes[0] == "@LIDER": # Token de votação
+    if len(partes) == 2 and partes[0] == "@LIDER":  # Token de votação
         ip_iniciador = partes[1]
         if ip_iniciador == MEU_ID and STATUSLIDER == "waiting":
             LIDER = MEU_ID
             STATUSLIDER = "elected"
-            if MODO == "debug":
-                print(f"\n[ELEIÇÃO] Venci! Sou o novo líder: {LIDER}")
+            print(f"\n[ELEIÇÃO] 🏆 Novo líder estabelecido: {LIDER}")
+
             cliente_envio(username, f"@LIDER>>{LIDER}>>ELECTED")
-            time.sleep(1) # Pequena pausa antes de iniciar a construção da lista
-            iniciar_construcao_lista() # Líder eleito inicia a criação da lista
-            
-            threading.Thread(target=enviar_heartbeat, daemon=True).start()
+            time.sleep(1)
+            iniciar_construcao_lista()
+
+            threading.Thread(target=enviar_heartbeat, daemon=True, name="enviar_heartbeat").start()
             if MODO == "heartbeat":
                 print(f"[HEARTBEAT] Thread iniciada automaticamente para o novo líder {LIDER}")
 
+            if LIDER == MEU_ID:
+                if not any(t.name == "multicast_listener" for t in threading.enumerate()):
+                    t = threading.Thread(target=multicast_listener, daemon=True, name="multicast_listener")
+                    t.start()
+                    if MODO == "debug":
+                        print(f"[MULTICAST] Listener iniciado pelo líder {LIDER}")
             return True
+
         
     elif len(partes) == 3 and partes[0] == "@LIDER" and partes[2] == "ELECTED": # Anúncio de líder
         ip_lider = partes[1]
@@ -250,18 +259,21 @@ def eleger_lider(msg):
             print(f"\n[ELEIÇÃO] Líder eleito: {LIDER}")
         else:
             return True
+    
     return False
 
 def iniciar_eleicao():
-    global STATUSLIDER
-    if LIDER is None and STATUSLIDER is None:
+    global STATUSLIDER, LIDER, ultimo_heartbeat
+    tempo_desde_ultimo_heartbeat = time.time() - ultimo_heartbeat
+    
+    if LIDER is None and STATUSLIDER not in ("waiting", "connected") and tempo_desde_ultimo_heartbeat > 10:
         STATUSLIDER = "waiting"
         if MODO == "debug":
             print("\n[ELEIÇÃO] Iniciei uma nova eleição...")
         cliente_envio(username, f"@LIDER>>{MEU_ID}")
     else:
         if MODO == "debug":
-            print("\n[ELEIÇÃO] Eleição já em andamento ou líder já definido.")
+            print("\n[ELEIÇÃO] Condições não atendidas (há líder ou heartbeat recente).")
 
 def iniciar_construcao_lista():
     if LIDER == MEU_ID:
@@ -395,43 +407,106 @@ LOCAL_COMMANDS = {
 }
 
 
+
+# --- CONFIGURACAO MULTICAST ---
+
+# --- FUNÇÃO DE ESCUTA MULTICAST PARA LÍDER ---
+def multicast_listener():
+    """Líder escuta pedidos de entrada via multicast e responde via unicast."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind(('', MULTICAST_PORT))
+
+    mreq = socket.inet_aton(MULTICAST_GROUP) + socket.inet_aton('0.0.0.0')
+    sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+
+    print(f"[MULTICAST] Escutando em {MULTICAST_GROUP}:{MULTICAST_PORT}")
+
+    while True:
+        data, addr = sock.recvfrom(1024)
+        msg = data.decode('utf-8')
+        if msg.startswith("DISCOVER"):
+            _, ip, porta = msg.split(":")
+            print(f"[MULTICAST] Pedido de entrada recebido de {ip}:{porta}")
+
+            # Decide quem será o vizinho do novo nó
+            if NETWORK_MEMBERS:
+                proximo_no = NETWORK_MEMBERS[0]
+            else:
+                proximo_no = MEU_ID  # primeiro nó
+
+            # Envia resposta unicast direta
+            resposta = f"JOIN:{proximo_no}"
+            sock.sendto(resposta.encode('utf-8'), (ip, int(porta)))
+            print(f"[MULTICAST] Resposta enviada: {resposta}")
+
+# --- FUNÇÃO DE ENVIO MULTICAST PARA NÓS NOVOS ---
+def multicast_discovery():
+    """Nó novo envia um DISCOVER e aguarda resposta do líder."""
+    global PROXIMO_IP, PROXIMO_PORTA,LIDER, STATUSLIDER
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+    sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
+
+    # Descobrir o IP local (para o líder responder)
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.connect(("8.8.8.8", 80))
+    meu_ip = s.getsockname()[0]
+    s.close()
+    
+    
+    sock.bind(("", 0))  # associa a qualquer porta livre
+    minha_porta = sock.getsockname()[1]
+
+    msg = f"DISCOVER:{meu_ip}:{minha_porta}"
+    sock.sendto(msg.encode('utf-8'), (MULTICAST_GROUP, MULTICAST_PORT))
+
+    if(MODO == 'debug'): print(f"[MULTICAST] Pedido de entrada enviado: {msg}")
+
+    sock.settimeout(5)
+    try:
+        data, addr = sock.recvfrom(1024)
+        resposta = data.decode("utf-8").strip()
+        
+        if resposta.startswith("JOIN:"):
+            destino = resposta[len("JOIN:"):]
+            ip, porta = destino.split(":")
+            PROXIMO_IP = ip
+            PROXIMO_PORTA = int(porta)
+            if(MODO == 'debug'): print(f"[MULTICAST] Fui conectado ao anel via {PROXIMO_IP}:{PROXIMO_PORTA}")
+            
+            STATUSLIDER = "connected"
+            time.sleep(10)
+        
+    except socket.timeout:
+        if MODO == "debug":
+            print("[MULTICAST] Nenhum líder respondeu. Iniciando como primeiro nó (possível líder).")
+        LIDER = f"{MEU_IP}:{MEU_PORTA}"
+        STATUSLIDER = "elected"
+        threading.Thread(target=multicast_listener, daemon=True, name="multicast_listener").start()
+        print(f"[ELEIÇÃO] 🏆 Assumindo papel de líder inicial: {LIDER}")
+
 if __name__ == "__main__":
-    # print(sys.argv)
-    
+    if MODO == 'debug':
+        print("--- Descoberta via Multicast ---")
 
-    # --- INICIALIZAÇÃO ---
-    threading.Thread(target=servidor, daemon=True).start()
-    
-    
-    print("--- Configuração do Nó ---")
-    aux = input(f"IP do próximo nó é {PROXIMO_IP}. Pressione Enter ou digite um novo IP: ")
-    if aux: PROXIMO_IP = aux
-    
-    aux2 = input(f"Porta do próximo nó é {PROXIMO_PORTA}. Pressione Enter ou digite uma nova porta: ")
-    if aux2: PROXIMO_PORTA = int(aux2)
-    
+    multicast_discovery()
+    threading.Thread(target=servidor, daemon=True, name="servidor").start()
+
     configurar_username()
-    time.sleep(1) 
-    
-    # --- HEARTBEATS ---
-    
-    if not heartbeat_thread_started:
-        threading.Thread(target=enviar_heartbeat, daemon=True).start()
-        heartbeat_thread_started = True
-    
-    ultimo_heartbeat = time.time()
-    threading.Thread(target=monitorar_heartbeat, daemon=True).start()  # Todos os nós monitoram
-    threading.Thread(target=enviar_heartbeat, daemon=True).start()     # O líder envia batimentos
-    
-    local_cmd_help() # Mostra a ajuda inicial
+    time.sleep(1)
 
-    # --- LOOP PRINCIPAL REATORADO ---
+    # --- HEARTBEAT ---
+    # Apenas monitorar (líder iniciará envio automaticamente após eleição)
+    threading.Thread(target=monitorar_heartbeat, daemon=True, name="monitorar_heartbeat").start()
+
+    local_cmd_help()
+
     while True:
         texto_usuario = input("> ")
         comando = texto_usuario.strip().upper()
 
         handler = LOCAL_COMMANDS.get(comando)
-
         if handler:
             handler()
         else:

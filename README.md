@@ -1,76 +1,204 @@
-# Trabalho Final – Sistemas Distribuídos
-## Tema: Sistema de Chat Distribuído com Tolerância a Falhas
-### Enunciado:
-Desenvolva um sistema de mensagens instantâneas distribuído (sem servidor central)
-onde os nós da rede podem enviar e receber mensagens em tempo real. O sistema deve
-ser resiliente a falhas de nós e capaz de se reorganizar automaticamente em caso de
-desconexões.
-#### Requisitos mínimos obrigatórios:
-1. Arquitetura peer-to-peer: não pode haver um servidor único; cada cliente deve
-atuar também como nó da rede.
-2. Entrada na rede: um nó pode entrar conhecendo apenas o IP de multicast.
-Apenas o coordenador deve responder, iniciando, assim, o início do cadastro desse nó.
-3. Coordenador:
-    1. O coordenador é responsável por atribuir identificadores únicos aos nós que entram.
-    2. O Coordenador e responsável por anunciar saída de um nó.
-    3. O coordenador envia periodicamente um heartbeat para indicar que continua ativo.
-4. Eleição de novo coordenador:
-    1. Se o coordenador falhar ou sair, os nós devem detectar a ausência do heartbeat e eleger automaticamente um novo coordenador (ex.: algoritmo do Bully ou Ring).
-5. Tolerância a falhas: quando um nó sai ou falha, a rede deve se reorganizar
-automaticamente (por exemplo, elegendo um novo coordenador para alguma
-função, se necessário).
-6. Histórico consistente: todos os nós ativos devem convergir para o mesmo
-histórico de mensagens (mesmo que em ordem causal e não necessariamente
-cronológica perfeita).
-7. Demonstração prática: crie um protótipo funcional onde pelo menos 4
-máquinas/nós distintos participem simultaneamente.
-Usar linguagem de programação Python ou Java.
+# 💬 Trabalho Final – Sistemas Distribuídos  
+## Tema: Sistema de Chat Distribuído com Tolerância a Falhas  
 
-O aluno terá 13 minutos para mostrar ao professor o código executando e responder suas
-perguntas. Caso o aluno passe do tempo, perderá ponto. Não será necessário apresentar,
-apenas irá demonstrar o código e tirar dúvidas na mesa do professor. O Código será ser
-enviado pelo classroom.
+### Enunciado  
+Desenvolver um sistema de **mensagens instantâneas distribuído (sem servidor central)**, onde os nós da rede podem **enviar e receber mensagens em tempo real**.  
+O sistema deve ser **resiliente a falhas de nós** e capaz de **se reorganizar automaticamente** em caso de desconexões.  
 
-# SistemasDistribuidos
+---
 
-## Arquitetura peer-to-peer
-## Entrada multicast na rede
+## 🧩 Arquitetura Peer-to-Peer  
 
-✔️ Listener multicast inicia apenas uma vez (evita erro “address already in use”).
+✔️ Cada instância do programa é simultaneamente **cliente e servidor**.  
+- Cada nó abre um socket TCP (`servidor()`) e aceita conexões de outros nós.  
+- As mensagens são repassadas em anel (Ring Topology).  
+- O líder é apenas um nó eleito dinamicamente, **não um servidor central fixo**.  
 
-✔️ O primeiro nó assume automaticamente como líder, garantindo inicialização suave da rede distribuída.
+✔️ Comunicação é descentralizada:  
+- Mensagens são encaminhadas de nó a nó via `enviar_para_proximo()`.  
+- Cada mensagem tem um UUID único para evitar duplicações (armazenadas em `cache`).  
+- O chat é broadcast em anel — todos os nós recebem.  
 
-## Papel do Coordenador
-### Integração do heartbeat
+🔹 **Vantagem:** A rede continua funcional mesmo se o líder cair — o sistema se reorganiza.  
 
-✔️ O líder envia @HEARTBEAT a cada 5 s.
+---
 
-✔️ Os demais nós atualizam ultimo_heartbeat sempre que recebem.
+## 📡 Entrada Multicast na Rede  
 
-✔️ O monitor verifica ausência de batimento e dispara eleição após 10 s.
+✔️ O **multicast** permite que novos nós descubram a rede sem saber o IP do líder.  
+- O primeiro nó executa `multicast_listener()` e se torna líder.  
+- Novos nós enviam `DISCOVER:<ip>:<porta>` via `multicast_discovery()`.  
+- Apenas o líder responde com `JOIN|<vizinho_anterior>|<líder>`.
 
-✔️ As duas threads (enviar_heartbeat e monitorar_heartbeat) são criadas no main com daemon=True, o que mantém o loop principal livre.
+✔️ O nó recém-chegado conecta-se ao anel via o vizinho informado e anuncia:
+```python
+cliente_envio(username, f"Olá, entrei na rede! Meu ID é {meu_ip}:{minha_porta}")
+```
 
-✔️ A variável ultimo_heartbeat é inicializada antes do start das threads.
+✔️ O líder adiciona o novo nó à lista global e redistribui automaticamente a lista:
+```python
+NETWORK_MEMBERS.append(novo_no)
+distribuir_lista_membros()
+```
 
-✔️ Os prints condicionais com sys.argv[1] == "heartbeat" ou "debug" são uma boa prática de instrumentação.
+🟢 **Resultado:** a rede cresce dinamicamente e mantém consistência entre todos os nós.
 
-🔹 Comportamento esperado:
+---
 
-Apenas o líder enviará batimentos (if LIDER == MEU_ID:).
+## 👑 Papel do Coordenador (Líder)
 
-Ao perder o líder, os outros nós iniciarão uma nova eleição.
+### Funções principais:
+1. **Gerenciar entrada de novos nós** via `multicast_listener()`.
+2. **Distribuir lista de membros** da rede (`@LIST_BUILD` e `@LIST_UPDATE`).
+3. **Enviar heartbeat periódico** para indicar que está ativo.
+4. **Gerenciar saída e reconexão** de nós (`@EXIT`, `@RECONNECT`).
+5. **Iniciar nova eleição** em caso de falhas.
 
-Quando o novo líder for eleito, ele automaticamente começará a enviar batimentos (pois a thread já está rodando e a condição passará a ser verdadeira).
+---
 
-O envio de batimentos (enviar_heartbeat) só é iniciado quando há eleição concluída — ou seja, quando o nó se torna líder.
+## ❤️ Integração do Heartbeat  
 
-Isso evita batimentos prematuros e reduz ruído na rede.
+✔️ O líder envia `@HEARTBEAT` a cada 5 segundos:  
+```python
+if LIDER == MEU_ID:
+    cliente_envio(username, "@HEARTBEAT")
+```
 
-## Eleição de novo coordenador
-## Tolerância a falhas
-## Histórico consistente
-## Demonstração prática:
+✔️ Os demais nós atualizam `ultimo_heartbeat` ao receber:  
+```python
+ultimo_heartbeat = time.time()
+```
 
+✔️ O monitor (`monitorar_heartbeat`) verifica continuamente:  
+- Se passar **>10 segundos** sem heartbeat → inicia eleição.  
 
+✔️ Threads daemon:  
+- `enviar_heartbeat()` e `monitorar_heartbeat()` são threads independentes (`daemon=True`).  
+- Isso mantém o loop principal livre para o chat e comandos.
 
+🔹 **Fluxo automático:**
+- O líder envia batimentos somente após ser eleito.  
+- Quando o líder cai, os outros detectam ausência e iniciam eleição.  
+- O novo líder automaticamente passa a enviar batimentos.
+
+🟢 **Vantagem:** Nenhum batimento é enviado prematuramente, evitando ruído na rede.
+
+---
+
+## ⚙️ Eleição de Novo Coordenador  
+
+✔️ O sistema implementa um **algoritmo de eleição em anel**.  
+- Cada nó envia `@LIDER>><meu_id>` quando detecta ausência de líder.  
+- A mensagem circula até retornar ao iniciador.  
+- O nó iniciador reconhece-se como novo líder:  
+```python
+if ip_iniciador == MEU_ID and STATUSLIDER == "waiting":
+    LIDER = MEU_ID
+    STATUSLIDER = "elected"
+```
+
+✔️ Após ser eleito:
+- O novo líder anuncia: `@LIDER>>{LIDER}>>ELECTED`.
+- Reconstrói e distribui a lista de membros.
+- Inicia automaticamente o envio de heartbeats e multicast listener.
+
+🟢 **Comportamento:** a eleição é totalmente descentralizada, sem intervenção manual.
+
+---
+
+## 🧠 Tolerância a Falhas  
+
+✔️ **Falha do líder:**  
+- Detectada por ausência de heartbeat.  
+- Dispara nova eleição automaticamente.  
+- Novo líder assume e restabelece multicast + batimentos.
+
+✔️ **Saída de nó:**  
+- O líder recebe `@EXIT>><id>` e calcula novo anel:  
+```python
+cliente_envio(username, f"@RECONNECT>>{predecessor}>>{sucessor}")
+```
+- Redistribui lista com `@LIST_UPDATE`.
+
+✔️ **Falha de nó intermediário:**  
+- O anel é reconstituído, e os vizinhos são reconectados automaticamente.
+
+🟢 **Resiliência garantida:** a rede continua operando mesmo com quedas parciais.
+
+---
+
+## 🧾 Histórico Consistente  
+
+✔️ Toda mensagem contém um **UUID único** (`msg_id`):  
+```python
+msg_id = str(uuid.uuid4())
+```
+✔️ As mensagens são armazenadas no `cache` (estrutura `deque`):  
+- Garante que cada mensagem circule apenas uma vez.  
+- Evita duplicação e inconsistência no chat.  
+
+✔️ As mensagens são repassadas até completar o ciclo (`Ring Broadcast`).  
+Assim, todos os nós veem o mesmo histórico.  
+
+---
+
+## 🧪 Demonstração Prática  
+
+- Testado localmente com 3 a 4 terminais (127.0.0.1:9001–9004).  
+- Primeira instância assume papel de líder automaticamente.  
+- Novos nós se conectam via multicast (`DISCOVER`) e são integrados ao anel.  
+- Mensagens trocadas são exibidas em todos os terminais.  
+- Eleição ocorre automaticamente quando o líder é encerrado (`Ctrl+C` ou `FIM`).  
+
+---
+
+## 🧰 Comandos Disponíveis
+
+| Comando | Função |
+|----------|--------|
+| **@LIDER** | Inicia manualmente uma eleição |
+| **@LIST** | Solicita atualização da lista de membros |
+| **@MEMBERS** | Mostra os nós conhecidos |
+| **FIM** | Sai da rede de forma organizada |
+| **@HELP** | Mostra a lista de comandos |
+
+---
+
+## ⚙️ Modos de Execução  
+
+Use argumentos opcionais para habilitar logs:  
+
+```bash
+python3 client_server.py debug
+python3 client_server.py heartbeat
+python3 client_server.py
+```
+
+- `debug` → Mostra logs detalhados da rede, multicast e eleição.  
+- `heartbeat` → Mostra apenas batimentos e falhas de líder.  
+- padrão → Apenas chat e comandos.  
+
+---
+
+## 📚 Tecnologias Utilizadas  
+
+- **Python 3.10+**  
+- **Sockets TCP/UDP**  
+- **Multicast IP (UDP)**  
+- **Threads (threading)**  
+- **Estruturas de dados deque e UUID**  
+
+---
+
+## 🏁 Conclusão  
+
+O sistema implementa todos os **requisitos obrigatórios** do trabalho final de Sistemas Distribuídos:  
+✅ Arquitetura P2P  
+✅ Entrada multicast  
+✅ Coordenação descentralizada  
+✅ Eleição automática  
+✅ Heartbeat e detecção de falhas  
+✅ Tolerância a falhas com reconexão  
+✅ Histórico consistente entre nós  
+
+É um protótipo funcional e resiliente, capaz de demonstrar os conceitos centrais da disciplina com clareza e robustez.

@@ -62,7 +62,7 @@ def handle_list_build(user, conteudo, msg_id, **kwargs):
     if iniciador == MEU_ID:
         if MODO == "debug":
             print("[REDE] Lista de membros completa recebida.  🧾  ")
-        NETWORK_MEMBERS = sorted(membros_str.split(','))
+        NETWORK_MEMBERS = membros_str.split(',')
         distribuir_lista_membros()
     else:
         nova_lista_membros = f"{membros_str},{MEU_ID}"
@@ -72,14 +72,14 @@ def handle_list_build(user, conteudo, msg_id, **kwargs):
 
 def handle_list_update(user, conteudo, **kwargs):
     global NETWORK_MEMBERS
-    NETWORK_MEMBERS = sorted(conteudo.split(">>")[1].split(','))
+    NETWORK_MEMBERS = conteudo.split(">>")[1].split(',')
     if MODO == "debug":
         print(f"[REDE] Lista de membros atualizada: {NETWORK_MEMBERS}  🧾")
     return False
 
 def handle_exit(user, conteudo, **kwargs):
     if LIDER == MEU_ID:
-        no_saindo = conteudo.split(">>")[1]
+        no_saindo = conteudo.split(">>")[1].strip()
         if MODO == "debug":
             print(f"[LIDER] Nó {no_saindo} está saindo  🏃‍♂️  . Recalculando o anel.")
         gerenciar_saida_de_no(no_saindo)
@@ -98,14 +98,34 @@ def handle_reconnect(user, conteudo, **kwargs):
     return False
 
 def handle_leader_exit(user, conteudo, **kwargs):
-    global LIDER, STATUSLIDER, NETWORK_MEMBERS
+    global LIDER, STATUSLIDER, NETWORK_MEMBERS, PROXIMO_IP, PROXIMO_PORTA
+
+    partes = conteudo.split(">>")
+    
+    # Verifica se a mensagem tem os dados de reparo do anel
+    if len(partes) == 4:
+        _, lider_saindo, predecessor_no_anel, sucessor_no_anel = partes
+        
+        # Se EU sou o predecessor (o nó que apontava para o líder), devo me reconectar
+        if MEU_ID == predecessor_no_anel: # <-- ESTA É A MUDANÇA
+            novo_ip, nova_porta = sucessor_no_anel.split(":")
+            PROXIMO_IP = novo_ip
+            PROXIMO_PORTA = int(nova_porta)
+            if MODO == "debug":
+                print(f"[REDE] O líder saiu. Reconectando ao seu sucessor: {sucessor_no_anel}")
+    
+    # Se for a mensagem "@LEADER_EXIT_SOLO" ou qualquer outra,
+    # apenas resetamos o estado.
+
     if MODO == "debug":
         print("[REDE] O LÍDER SAIU! Resetando estado e iniciando nova eleição.  🙋‍♂️🙋🙋‍♂️🙋 ")
+    
     LIDER = None
     STATUSLIDER = None
     NETWORK_MEMBERS = []
     iniciar_eleicao()
-    return False
+    
+    return False # Deixa a mensagem circular para todos
 
 
 # --- HEARTBEAT ---
@@ -115,7 +135,7 @@ def enviar_heartbeat():
             cliente_envio(username, f"@HEARTBEAT>>{LIDER}")
             if MODO in ("debug", "heartbeat"):
                 print(f"[HEARTBEAT]  ❤️  Enviado pelo líder {LIDER}")
-        time.sleep(5)''
+        time.sleep(5)
 
 def handle_heartbeat(user, conteudo, **kwargs):
     global ultimo_heartbeat, LIDER
@@ -132,16 +152,15 @@ def handle_heartbeat(user, conteudo, **kwargs):
         print(f"[HEARTBEAT]  ❤️  Recebido de {user} ({time.strftime('%H:%M:%S')}) - líder {LIDER} 👑  ")
     return False
 
+
 def monitorar_heartbeat():
     global ultimo_heartbeat
     ultimo_heartbeat = time.time()
     while True:
-        if time.time() - ultimo_heartbeat > 15:
-            if MODO in ("debug", "heartbeat"):
-                print("[ALERTA] Falha do líder detectada. Iniciando eleição.  🙋‍♂️🙋🙋‍♂️🙋  ")
-            iniciar_eleicao()
-        time.sleep(2)
-
+        # Simplificado: apenas chama a função de iniciar eleição.
+        # A própria função decidirá se o tempo foi excedido.
+        time.sleep(2) 
+        iniciar_eleicao()
 
 COMMAND_HANDLERS = {
     "@LIDER": handle_lider,
@@ -235,19 +254,33 @@ def eleger_lider(msg):
         return True
     return False
 
-
 def iniciar_eleicao():
     global STATUSLIDER, LIDER, ultimo_heartbeat
     tempo_desde_ultimo_heartbeat = time.time() - ultimo_heartbeat
-    if LIDER is None and STATUSLIDER not in ("waiting", "connected") and tempo_desde_ultimo_heartbeat > 10:
+
+    # CONDIÇÃO DE FALHA DO HEARTBEAT (Se o líder simplesmente sumir)
+    condicao_falha_hb = (LIDER is not None and tempo_desde_ultimo_heartbeat > 15)
+    
+    # CONDIÇÃO DE SAÍDA DO LÍDER (Líder anunciou @LEADER_EXIT)
+    # ⬇️ CORREÇÃO 1: Mudar de "is not" para "!="
+    condicao_saida_lider = (LIDER is None and STATUSLIDER != "connected")
+
+    # ⬇️ CORREÇÃO 2: Mudar de "not in" para "!="
+    if (condicao_falha_hb or condicao_saida_lider) and STATUSLIDER != "waiting": 
+        # Reseta o estado para permitir a eleição
+        LIDER = None
         STATUSLIDER = "waiting"
-        print("\n[ELEIÇÃO] Iniciei uma nova eleição... 🙋‍♂️🙋🙋‍♂️🙋")
+        # Reseta o timer para evitar spam de eleições
+        ultimo_heartbeat = time.time() 
+        
+        print(f"\n[ELEIÇÃO] Iniciei uma nova eleição... 🙋‍♂️🙋🙋‍♂️🙋 (Motivo: {'Falha HB' if condicao_falha_hb else 'Rede sem Líder'})")
         cliente_envio(username, f"@LIDER>>{MEU_ID}")
     else:
-        if MODO == "debug":
-            print("\n[ELEIÇÃO] Condições não atendidas (há líder) 🤴.")
+        # Esta é a nova mensagem de log
+        if MODO == "debug" and not (condicao_falha_hb or condicao_saida_lider):
+             print("\n[ELEIÇÃO] Condições não atendidas (Líder OK).")
 
-
+             
 # --- GERENCIAMENTO DE REDE ---
 def iniciar_construcao_lista():
     if LIDER == MEU_ID:
@@ -323,7 +356,7 @@ def multicast_listener():
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind(('', MULTICAST_PORT))
-    mreq = socket.inet_aton(MULTICAST_GROUP) + socket.inet_aton(MEU_IP)
+    mreq = socket.inet_aton(MULTICAST_GROUP) + socket.inet_aton('0.0.0.0')
     sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
     print(f"[MULTICAST] Escutando em {MULTICAST_GROUP}:{MULTICAST_PORT} (iface {MEU_IP})")
 
@@ -366,13 +399,12 @@ def multicast_listener():
             # 4. Atualiza a lista de membros e distribui (sem @JOINED)
             if novo_no not in NETWORK_MEMBERS:
                 NETWORK_MEMBERS.append(novo_no)
-                # NETWORK_MEMBERS = sorted(list(set(NETWORK_MEMBERS)))
                 distribuir_lista_membros()
 
 
 def multicast_discovery():
     """Nó novo envia DISCOVER e aguarda resposta do líder"""
-    global PROXIMO_IP, PROXIMO_PORTA, LIDER, STATUSLIDER
+    global PROXIMO_IP, PROXIMO_PORTA, LIDER, STATUSLIDER,NETWORK_MEMBERS
 
     print("[MULTICAST] Aguardando 10 segundos antes de iniciar descoberta...")
     for i in range(10, 0, -1):
@@ -414,7 +446,7 @@ def multicast_discovery():
             time.sleep(1) 
     
     except socket.timeout:
-        espera = random.uniform(1.5, 3.5)
+        espera = random.uniform(1.5, 10.5)
         print(f"[MULTICAST] Nenhum líder respondeu. Aguardando {espera:.1f}s antes de assumir liderança... ⌚")
         time.sleep(espera)
         
@@ -452,13 +484,29 @@ def servidor():
 def configurar_username():
     global username
     username = input("Digite o nome de usuário: ")
-
-
 def graceful_exit():
     if LIDER == MEU_ID:
-        cliente_envio(username, "@LEADER_EXIT")
+        # Se sou o líder, preciso consertar o anel.
+        # Anel: Líder -> P_ultimo -> ... -> P2 -> Líder
+        
+        if len(NETWORK_MEMBERS) > 1:
+            # P2 (índice 1) é o predecessor no anel (aponta PARA o líder)
+            predecessor_no_anel = NETWORK_MEMBERS[1] 
+            # P_ultimo (índice -1) é o sucessor no anel (o líder aponta PARA ele)
+            sucessor_no_anel = NETWORK_MEMBERS[-1]
+            
+            # Formato: @LEADER_EXIT >> ID_LIDER_SAINDO >> ID_PREDECESSOR >> ID_SUCESSOR
+            # A mensagem diz: "Ei, [predecessor_no_anel], se conecte ao [sucessor_no_anel]"
+            msg = f"@LEADER_EXIT>>{MEU_ID}>>{predecessor_no_anel}>>{sucessor_no_anel}"
+            cliente_envio(username, msg)
+        else:
+            # Sou o único nó, só preciso sair
+            cliente_envio(username, "@LEADER_EXIT_SOLO")
+            
     else:
+        # Sou um nó comum, apenas aviso
         cliente_envio(username, f"@EXIT>>{MEU_ID}")
+        
     print("Saindo da rede... 👋")
     os._exit(0)
 
@@ -497,13 +545,17 @@ def local_cmd_members():
     print("-" * 30)
 
 def local_cmd_lider():
-    """Inicia o processo de eleição de líder."""
-    iniciar_eleicao()
-
+    """Inicia uma eleição ou mostra o líder atual."""
+    if LIDER:
+        print(f"\nO líder atual é: {LIDER} 👑")
+    else:
+        print("Nenhum líder conhecido. Iniciando eleição...")
+        iniciar_eleicao()
+        
 def local_cmd_list():
     """Solicita ao líder a lista atual de membros."""
     if LIDER:
-        print("Solicitando a lista de membros ao líder... 🧾")
+        print("Solicitando a lista de membros ao líder...")
         iniciar_construcao_lista()
     else:
         print("Nenhum líder conhecido para solicitar a lista.")

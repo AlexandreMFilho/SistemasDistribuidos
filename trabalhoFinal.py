@@ -85,7 +85,8 @@ def handle_exit(user, conteudo, **kwargs):
     if len(partes) >= 4:
         _, no_saindo, predecessor, sucessor = partes
         if LIDER == MEU_ID:
-            print(f"[LIDER] Nó {no_saindo} saiu 🏃‍♂️ . Recalculando o anel.")
+            if MODO == "debug":
+                print(f"[LIDER] Nó {no_saindo} saiu 🏃‍♂️ . Recalculando o anel.")
             # reconecta predecessor -> sucessor
             cliente_envio(username, f"@RECONNECT>>{predecessor}>>{sucessor}")
             if no_saindo in NETWORK_MEMBERS:
@@ -95,7 +96,8 @@ def handle_exit(user, conteudo, **kwargs):
     elif LIDER == MEU_ID:
         # fallback para versão antiga (sem predecessor)
         no_saindo = conteudo.split(">>")[1].strip()
-        print(f"[LIDER] Nó {no_saindo} saiu 🏃‍♂️ . Recalculando o anel.")
+        if MODO == "debug":
+            print(f"[LIDER] Nó {no_saindo} saiu 🏃‍♂️ . Recalculando o anel.")
         gerenciar_saida_de_no(no_saindo)
     return False
 
@@ -129,7 +131,8 @@ def handle_leader_exit(user, conteudo, **kwargs):
             novo_ip, nova_porta = sucessor_no_anel.split(":")
             PROXIMO_IP = novo_ip
             PROXIMO_PORTA = int(nova_porta)
-            print(f"[REDE] O líder saiu. Reparando anel: conectando a {sucessor_no_anel}")
+            if MODO == "debug":
+                print(f"[REDE] O líder saiu. Reparando anel: conectando a {sucessor_no_anel}")
             
             # Agora SÓ EU inicio a eleição
             LIDER = None
@@ -142,7 +145,8 @@ def handle_leader_exit(user, conteudo, **kwargs):
             LIDER = None
             STATUSLIDER = "waiting" # Aguarda o novo líder
             NETWORK_MEMBERS = [] # Limpa a lista
-            print("[REDE] Líder saiu. Aguardando novo líder ser eleito.")
+            if MODO == "debug":
+                print("[REDE] Líder saiu. Aguardando novo líder ser eleito.")
 
     # CASO 2: Mensagem simples (fallback, ou morte súbita acionou o monitor)
     # Se a mensagem for apenas "@LEADER_EXIT" (sem reparo), todos tentam.
@@ -220,7 +224,8 @@ def enviar_para_proximo(msg):
         # --- Início da Rotina de Reconexão de Nó Órfão ---
         if RECONEXAO_LOCK.acquire(blocking=False):
             try:
-                print("[REDE] Conexão com o próximo nó perdida. Tentando redescobrir a rede...")
+                if MODO == "debug":
+                    print("[REDE] Conexão com o próximo nó perdida. Tentando redescobrir a rede...")
                 LIDER = None
                 STATUSLIDER = "lost" # Novo estado para indicar "perdido"
                 PROXIMO_IP = None
@@ -284,8 +289,8 @@ def eleger_lider(msg):
             STATUSLIDER = "elected"
             if not NETWORK_MEMBERS:
                 NETWORK_MEMBERS = [MEU_ID]
-
-            print(f"\n[ELEIÇÃO] 🏆 Novo líder estabelecido: {LIDER} 👑")
+            if MODO == "debug":
+                print(f"\n[ELEIÇÃO] 🏆 Novo líder estabelecido: {LIDER} 👑")
             cliente_envio(username, f"@LIDER>>{LIDER}>>ELECTED")
             time.sleep(1)
             iniciar_construcao_lista() # <-- NOVO LÍDER RECONSTRÓI A LISTA
@@ -298,7 +303,8 @@ def eleger_lider(msg):
         if LIDER is None:
             LIDER = ip_lider
             STATUSLIDER = "elected"
-            print(f"\n[ELEIÇÃO] Líder eleito: {LIDER} 👑")
+            if MODO == "debug":
+                print(f"\n[ELEIÇÃO] Líder eleito: {LIDER} 👑")
         return True
     time.sleep(1)
     if not NETWORK_MEMBERS:
@@ -322,10 +328,11 @@ def iniciar_eleicao():
         LIDER = None
         STATUSLIDER = "waiting"
         ultimo_heartbeat = time.time()
-
-        print(f"\n[ELEIÇÃO] Iniciei uma nova eleição... (motivo: {'HB falhou' if condicao_falha_hb else 'sem líder'})")
+        if MODO == "debug":
+            print(f"\n[ELEIÇÃO] Iniciei uma nova eleição... (motivo: {'HB falhou' if condicao_falha_hb else 'sem líder'})")
         espera_eleicao = random.uniform(2.0, 8.0)
-        print(f"[ELEIÇÃO] Aguardando {espera_eleicao:.2f}s antes de enviar o token...")
+        if MODO == "debug":
+            print(f"[ELEIÇÃO] Aguardando {espera_eleicao:.2f}s antes de enviar o token...")
         time.sleep(espera_eleicao)
         cliente_envio(username, f"@LIDER>>{MEU_ID}")
     else:
@@ -392,11 +399,13 @@ def gerenciar_saida_de_no(no_saindo):
     # Agora, se o nó saindo for o PRÓXIMO do líder (P_ultimo), o líder precisa
     # se auto-atualizar.
     if no_saindo == f"{PROXIMO_IP}:{PROXIMO_PORTA}":
-        print(f"[REDE] Reparando meu próprio próximo. {no_saindo} saiu.")
+        if MODO == "debug":
+            print(f"[REDE] Reparando meu próprio próximo. {no_saindo} saiu.")
         novo_ip, nova_porta = sucessor.split(":")
         PROXIMO_IP = novo_ip
         PROXIMO_PORTA = int(nova_porta)
-        print(f"[REDE] Meu novo próximo é {sucessor}")
+        if MODO == "debug":
+            print(f"[REDE] Meu novo próximo é {sucessor}")
     
     # Envia a mensagem de reparo para o nó predecessor
     # (O nó que *apontava* para o nó que saiu)
@@ -417,7 +426,8 @@ def multicast_listener():
     sock.bind(('', MULTICAST_PORT))
     mreq = socket.inet_aton(MULTICAST_GROUP) + socket.inet_aton('0.0.0.0')
     sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
-    print(f"[MULTICAST] Escutando em {MULTICAST_GROUP}:{MULTICAST_PORT} (iface {MEU_IP})")
+    if MODO == "debug":
+        print(f"[MULTICAST] Escutando em {MULTICAST_GROUP}:{MULTICAST_PORT} (iface {MEU_IP})")
 
     while True:
         data, addr_remoto = sock.recvfrom(1024) # addr_remoto é (ip, porta_udp_efemera) do novo nó
@@ -430,8 +440,8 @@ def multicast_listener():
             # Ignora a si mesmo se o DISCOVER der a volta
             if novo_no == MEU_ID:
                 continue
-
-            print(f"[MULTICAST] Pedido de entrada recebido de {novo_no}")
+            if MODO == "debug":
+                print(f"[MULTICAST] Pedido de entrada recebido de {novo_no}")
 
             # 🔧 LÓGICA DE INSERÇÃO SIMPLIFICADA
             
@@ -448,12 +458,14 @@ def multicast_listener():
             
             # Envia a resposta para o IP e a porta UDP de onde veio a msg
             sock.sendto(resposta.encode('utf-8'), addr_remoto) 
-            print(f"[MULTICAST] Resposta enviada para {addr_remoto}: {resposta}")
+            if MODO == "debug":
+                print(f"[MULTICAST] Resposta enviada para {addr_remoto}: {resposta}")
 
             # 3. ATUALIZA O PRÓXIMO DO LÍDER para apontar para o novo nó
             PROXIMO_IP = ip
             PROXIMO_PORTA = int(porta_tcp)
-            print(f"[REDE] Anel atualizado: Líder -> {novo_no} -> {proximo_atual}")
+            if MODO == "debug":
+                print(f"[REDE] Anel atualizado: Líder -> {novo_no} -> {proximo_atual}")
 
             # 4. Atualiza a lista de membros e distribui
             if novo_no not in NETWORK_MEMBERS:
@@ -468,7 +480,8 @@ def multicast_discovery():
 
     # Se não for a primeira inicialização (estado "lost"), não espera 10s
     if STATUSLIDER != "lost":
-        print("[MULTICAST] Aguardando 10 segundos antes de iniciar descoberta...")
+        if MODO == "debug":
+            print("[MULTICAST] Aguardando 10 segundos antes de iniciar descoberta...")
         for i in range(10, 0, -1):
             print(f"   -> iniciando em {i}s...", end="\r")
             time.sleep(1)
@@ -484,7 +497,8 @@ def multicast_discovery():
 
     msg = f"DISCOVER:{MEU_IP}:{MEU_PORTA}" 
     sock.sendto(msg.encode('utf-8'), (MULTICAST_GROUP, MULTICAST_PORT))
-    print(f"[MULTICAST] Pedido de entrada enviado: {msg}")
+    if MODO == "debug":
+        print(f"[MULTICAST] Pedido de entrada enviado: {msg}")
 
     sock.settimeout(6)
     try:
@@ -500,13 +514,15 @@ def multicast_discovery():
             LIDER = lider_id
             STATUSLIDER = "connected"
             
-            print(f"[MULTICAST] Conectado ao anel. Próximo: {PROXIMO_IP}:{PROXIMO_PORTA}, Líder: {LIDER}")
+            if MODO == "debug":
+                print(f"[MULTICAST] Conectado ao anel. Próximo: {PROXIMO_IP}:{PROXIMO_PORTA}, Líder: {LIDER}")
             
             time.sleep(1) 
     
     except socket.timeout:
         espera = random.uniform(1.5, 10.5)
-        print(f"[MULTICAST] Nenhum líder respondeu. Aguardando {espera:.1f}s antes de assumir liderança... ⌚")
+        if MODO == "debug":
+            print(f"[MULTICAST] Nenhum líder respondeu. Aguardando {espera:.1f}s antes de assumir liderança... ⌚")
         time.sleep(espera)
         
         LIDER = MEU_ID
@@ -517,7 +533,8 @@ def multicast_discovery():
         
         threading.Thread(target=multicast_listener, daemon=True, name="multicast_listener").start()
         threading.Thread(target=enviar_heartbeat, daemon=True, name="enviar_heartbeat").start()
-        print(f"[ELEIÇÃO] 🏆 Assumindo papel de líder inicial: {LIDER}")
+        if MODO == "debug":
+            print(f"[ELEIÇÃO] 🏆 Assumindo papel de líder inicial: {LIDER}")
     
     finally:
         # Libera o lock se o adquirimos
@@ -575,7 +592,8 @@ def graceful_exit():
     os._exit(0)
 
 def signal_handler(sig, frame):
-    print("\n[INFO] Encerrando nó de forma segura... 🏃👮")
+    if MODO == "debug":
+        print("\n[INFO] Encerrando nó de forma segura... 🏃👮")
     graceful_exit()
 
 signal.signal(signal.SIGINT, signal_handler)
